@@ -1,0 +1,23 @@
+# db/queries.yaml
+pg_stat_statements_latency: # For tracking Mean and Max querry execution
+  query: |
+    SELECT
+      queryid::text as queryid,
+      datname,
+      mean_exec_time,
+      max_exec_time
+    FROM pg_stat_statements
+    JOIN pg_database ON pg_database.oid = pg_stat_statements.dbid
+  metrics:
+    - queryid:
+        usage: "LABEL"
+        description: "Query ID"
+    - datname:
+        usage: "LABEL"
+        description: "Database"
+    - mean_exec_time:
+        usage: "GAUGE"
+        description: "Mean execution time, in ms"
+    - max_exec_time:
+        usage: "GAUGE"
+        description: "Max execution time, in ms"

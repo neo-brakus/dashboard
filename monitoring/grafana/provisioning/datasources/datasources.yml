@@ -1,0 +1,62 @@
+# monitoring/grafana/provisioning/datasources/datasources.yml
+
+# Provisioned on startup, changes apply after a Grafana restart.
+# UIDs are stable identifiers used by cross-datasource features (trace→log links, etc.)
+
+apiVersion: 1
+
+datasources:
+
+  # --- Prometheus ---
+  - name: Prometheus
+    type: prometheus
+    uid: prometheus
+    url: http://prometheus:9090
+    isDefault: true
+    jsonData:
+      timeInterval: '15s'  # Must match global.scrape_interval in prometheus.yml
+      httpMethod: POST      # More efficient for large label sets and long queries
+
+  # --- Loki ---
+  - name: Loki
+    type: loki
+    uid: loki
+    url: http://loki:3100
+    jsonData:
+      derivedFields:
+        # Scans every log line for a trace ID and renders it as a Tempo deep-link.
+        # Matches: traceID=abc123 | trace_id=abc123 | traceid=abc123
+        - name: TraceID
+          matcherRegex: '(?:traceID|trace_id|traceid)[=:]([a-fA-F0-9]+)'
+          datasourceUid: tempo  # Opens Tempo directly rather than an external URL
+          url: '${__value.raw}' # Passes the captured trace ID as the Tempo query
+
+  # --- Tempo ---
+  - name: Tempo
+    type: tempo
+    uid: tempo
+    url: http://tempo:3200
+    jsonData:
+      # Jump from a span directly into Loki filtered by trace ID.
+      # Wide time shifts compensate for clock skew and slow log ingestion.
+      tracesToLogsV2:
+        datasourceUid: loki
+        spanStartTimeShift: '-1h'
+        spanEndTimeShift: '1h'
+        filterByTraceID: true
+        filterBySpanID: false  # Span-level log filtering is too granular to be useful here
+
+      # Link span durations to matching Prometheus series.
+      # Shifts widen the window beyond the span itself to catch related metric changes.
+      tracesToMetrics:
+        datasourceUid: prometheus
+        spanStartTimeShift: '-2m'
+        spanEndTimeShift: '2m'
+
+      # Service map and node graph are both derived from Tempo's own data;
+      # Prometheus uid is required here as Tempo writes service graph metrics there.
+      serviceMap:
+        datasourceUid: prometheus
+
+      nodeGraph:
+        enabled: true

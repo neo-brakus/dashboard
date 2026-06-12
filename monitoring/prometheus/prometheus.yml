@@ -1,0 +1,7 @@
+# monitoring/prometheus/prometheus.yml
+
+# Prometheus receives metrics via remote_write from Alloy, no scrape configs needed.
+# To scrape directly instead, add scrape_configs here and remove prometheus.remote_write from alloy/config.alloy.
+
+global:
+  scrape_interval: 15s

@@ -1,0 +1,48 @@
+# monitoring/tempo/tempo-config.yml
+
+# Compatible with grafana/tempo:2.7.x+
+
+# Required for large TraceQL result sets in Grafana Explore drilldown.
+stream_over_http_enabled: true
+
+server:
+  http_listen_port: 3200
+  log_level: info
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        grpc:
+          # Since Tempo 2.7 the default changed from 0.0.0.0 to localhost,
+          # breaking container-to-container communication.
+          endpoint: 0.0.0.0:4317
+        http:
+          endpoint: 0.0.0.0:4318
+
+metrics_generator:
+  registry:
+    external_labels:
+      source: tempo
+      cluster: docker-compose
+  storage:
+    path: /var/tempo/generator/wal  # /var/tempo is owned by UID 10001 in the official image.
+    remote_write:
+      - url: http://prometheus:9090/api/v1/write
+        send_exemplars: true  # Embeds trace IDs in Prometheus metrics for jump-to-trace links.
+
+storage:
+  trace:
+    backend: local
+    wal:
+      path: /var/tempo/wal
+    local:
+      path: /var/tempo/blocks
+
+overrides:
+  defaults:
+    metrics_generator:
+      processors:
+        - service-graphs  # RED metrics per service pair.
+        - span-metrics    # RED metrics broken down by span attributes.
+        - local-blocks    # Required since 2.6 for TraceQL metrics in Grafana drilldown.

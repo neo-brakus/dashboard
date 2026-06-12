@@ -1,0 +1,104 @@
+# monitoring/loki/loki-config.yml
+
+# Single-node Loki configuration for a local Docker Compose stack.
+# Loki 3.x runs all components in one process (target: all). Ring-based
+# features must be configured accordingly: inmemory KV store,
+# replication_factor 1, and LOCAL rate limiting (global queries the ring
+# and triggers "empty ring" errors on a single node).
+
+auth_enabled: false  # All logs land in the "fake" org. Enable and pass X-Scope-OrgID from Alloy for multi-tenancy.
+
+analytics:
+  reporting_enabled: false
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9096
+  log_level: warn  # Switch to 'info' to trace Alloy→Loki push issues.
+
+# 'common' sets defaults for all components. 127.0.0.1 is correct here
+# because every component is in-process and the ring never routes over a network.
+common:
+  instance_addr: 127.0.0.1
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory:  /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+# v13 + tsdb is the recommended schema for Loki 3.x.
+# 'from' is the earliest date this schema applies to; add a separate entry for older data.
+schema_config:
+  configs:
+    - from: 2020-10-24
+      store:        tsdb
+      object_store: filesystem
+      schema:       v13
+      index:
+        prefix: index_
+        period: 24h  # One index file per day — sensible for ≤30 day retention.
+
+ingester:
+  lifecycler:
+    address: 127.0.0.1
+    ring:
+      kvstore:
+        store: inmemory
+      replication_factor: 1
+    final_sleep: 0s  # Skip drain wait on shutdown for faster docker compose restarts.
+
+  chunk_idle_period:  1h
+  chunk_target_size:  1572864  # ~1.5 MB; tune down if flush latency is too high.
+  max_chunk_age:      2h       # Hard flush ceiling regardless of size.
+
+# Cache range query results in-process so dashboard auto-refresh
+# doesn't re-scan the same chunks on every tick.
+query_range:
+  align_queries_with_step: true  # Snap query windows to step boundaries for cache reuse.
+  cache_results: true
+  results_cache:
+    cache:
+      embedded_cache:
+        enabled:     true
+        max_size_mb: 128
+
+limits_config:
+  # 'local' calculates rate per ingester instance without querying the ring.
+  # The default 'global' causes "empty ring" errors on single-node deployments.
+  ingestion_rate_strategy: local
+
+  # Default is 4 MB/s — easily exceeded by high-traffic nginx JSON logs.
+  ingestion_rate_mb:       16
+  ingestion_burst_size_mb: 32
+
+  retention_period: 720h  # 30 days. Must also set compactor.retention_enabled: true.
+
+  # Fail queries older than the retention window fast rather than scanning empty storage.
+  max_query_lookback: 720h
+
+  # Prevents wide-lookback queries (e.g. SSH sessions panel) from OOMing Loki.
+  max_entries_limit_per_query: 10000
+
+  # Required by nginx latency percentile panels and SSH session duration calculations.
+  allow_structured_metadata: true
+
+  # Required by bandwidth and request-rate panels that use log-volume queries.
+  volume_enabled: true
+
+# Merges small index/chunk files and enforces retention deletions.
+compactor:
+  working_directory:    /loki/compactor
+  retention_enabled:    true
+  delete_request_store: filesystem
+  # Grace period before deleting expired chunks — lets in-flight queries finish.
+  retention_delete_delay: 2h
+
+# Alertmanager is not in this stack; alerts won't fire but Loki starts cleanly.
+# Replace the URL or remove this block when Alertmanager is added.
+ruler:
+  alertmanager_url: http://localhost:9093
+  enable_api: true

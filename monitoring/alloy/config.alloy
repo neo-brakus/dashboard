@@ -1,0 +1,199 @@
+// monitoring/alloy/config.alloy
+
+// ============================================================================
+// METRICS  Alloy scrapes -> Prometheus (remote_write)
+// ============================================================================
+
+prometheus.scrape "node_exporter" {
+  targets         = [{"__address__" = "node-exporter:9100"}]
+  job_name        = "node-exporter"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.prometheus.receiver]
+}
+
+prometheus.scrape "postgres" {
+  targets         = [{"__address__" = "postgres-exporter:9187"}]
+  job_name        = "postgres"
+  scrape_interval = "15s"
+  forward_to      = [prometheus.remote_write.prometheus.receiver]
+}
+
+prometheus.remote_write "prometheus" {
+  endpoint {
+    url = "http://prometheus:9090/api/v1/write"
+  }
+}
+
+// ============================================================================
+// TRACES  app -> Alloy -> Tempo
+// ============================================================================
+
+// Accepts spans from the app over gRPC (4317) and HTTP (4318).
+otelcol.receiver.otlp "default" {
+  grpc { endpoint = "0.0.0.0:4317" }
+  http { endpoint = "0.0.0.0:4318" }
+
+  output {
+    traces = [otelcol.processor.memory_limiter.default.input]
+  }
+}
+
+// Drops spans when memory pressure is high to protect the Alloy process.
+otelcol.processor.memory_limiter "default" {
+  check_interval         = "1s"
+  limit_percentage       = 80
+  spike_limit_percentage = 25
+
+  output {
+    traces = [otelcol.processor.batch.default.input]
+  }
+}
+
+// Buffers spans before export to reduce write pressure on Tempo.
+otelcol.processor.batch "default" {
+  timeout         = "5s"
+  send_batch_size = 1000
+
+  output {
+    traces = [otelcol.exporter.otlp.tempo.input]
+  }
+}
+
+// TLS disabled — internal Docker network only.
+otelcol.exporter.otlp "tempo" {
+  client {
+    endpoint = "tempo:4317"
+    tls { insecure = true }
+  }
+}
+
+// ============================================================================
+// LOGS  Docker containers -> Alloy -> Loki
+// ============================================================================
+
+discovery.docker "containers" {
+  host             = "unix:///var/run/docker.sock"
+  refresh_interval = "30s"
+}
+
+// Promote Docker metadata to Loki labels for log filtering.
+discovery.relabel "containers" {
+  targets = discovery.docker.containers.targets
+
+  // Docker prefixes container names with '/'; strip it.
+  rule {
+    source_labels = ["__meta_docker_container_name"]
+    regex         = "/(.*)"
+    target_label  = "container"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_service"]
+    target_label  = "service"
+  }
+
+  rule {
+    source_labels = ["__meta_docker_container_label_com_docker_compose_project"]
+    target_label  = "compose_project"
+  }
+}
+
+loki.source.docker "containers" {
+  host       = "unix:///var/run/docker.sock"
+  targets    = discovery.relabel.containers.output
+  forward_to = [loki.process.containers.receiver]
+}
+
+loki.process "containers" {
+
+  // --- nginx: JSON access logs + plain-text error logs ---
+  // Scoped to nginx only — its JSON format would break the Go log stages below.
+  stage.match {
+    selector = `{service="nginx"}`
+
+    // Extract status and method for label derivation only.
+    // All other fields (uri, timings, etc.) remain in the raw line for LogQL.
+    stage.json {
+      expressions = {
+        "status" = "status",
+        "method" = "method",
+      }
+    }
+
+    // Isolate the status class digit (e.g. "200" -> "2") for level mapping.
+    stage.regex {
+      source     = "status"
+      expression = `^(?P<status_class>[1-5])\d\d$`
+    }
+
+    // Map status class to log level: 5xx->error, 4xx->warn, rest->info.
+    // Produces nothing when status_class is absent (error log lines),
+    // leaving level unset for the error-log regex below to fill in.
+    stage.template {
+      source   = "level"
+      template = "{{if eq .status_class \"5\"}}error{{else if eq .status_class \"4\"}}warn{{else if .status_class}}info{{end}}"
+    }
+
+    // Parse level from nginx error log format: 2024/01/01 10:00:00 [warn] 1#1: …
+    // JSON access log lines never contain this bracket pattern, so there's
+    // no risk of overwriting the level derived from status above.
+    stage.regex {
+      expression = `\[(?P<level>debug|info|notice|warn|error|crit|alert|emerg)\]`
+    }
+
+    // Only low-cardinality fields become labels; high-cardinality values
+    // (uri, timings) stay in the log body and are queried with LogQL.
+    stage.labels {
+      values = {
+        "level"  = "",
+        "method" = "",
+        "status" = "",
+      }
+    }
+  }
+
+  // --- Non-nginx: plain-text Go logs ---
+  // Best-effort — if no keyword matches, no label is set and the line passes through.
+  stage.match {
+    selector = `{service!="nginx"}`
+
+    stage.regex {
+      expression = `(?i)(?P<level>DEBUG|INFO|WARN(?:ING)?|ERROR|FATAL|PANIC)`
+    }
+
+    stage.labels {
+      values = { "level" = "" }
+    }
+  }
+
+  // Drop debug logs. Services without a level label are unaffected.
+  stage.drop {
+    source              = "level"
+    expression          = "(?i)^debug$"
+    drop_counter_reason = "debug_log_dropped"
+  }
+
+  forward_to = [loki.write.default.receiver]
+}
+
+// ============================================================================
+// LOGS  Host auditd (SSH/auth) -> Alloy -> Loki
+// ============================================================================
+
+local.file_match "ssh_auth" {
+  path_targets = [{
+    __path__ = "/var/log/auth.log",
+    job      = "ssh",
+  }]
+}
+
+loki.source.file "ssh_auth" {
+  targets    = local.file_match.ssh_auth.targets
+  forward_to = [loki.write.default.receiver]
+}
+
+loki.write "default" {
+  endpoint {
+    url = "http://loki:3100/loki/api/v1/push"
+  }
+}

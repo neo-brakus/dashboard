@@ -1,0 +1,250 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Traffic Generator</title>
+  <style>
+    :root {
+      --bg: #000000;
+      --surface: #121212;
+      --surface-hover: #1c1c1c;
+      --border: #b4b4b4;
+      --text: #e4e4e4;
+      --muted: #b4b4b4;
+      --accent: #3b82f6;
+      --accent-hover: #124cc9;
+      --danger: #dc2626;
+      --danger-hover: #a01111;
+    }
+
+    body {
+      font-family: Inter, system-ui, sans-serif;
+      max-width: 900px;
+      margin: 40px auto;
+      padding: 0 24px;
+      background: var(--bg);
+      color: var(--text);
+    }
+
+    h2 {
+      color: white;
+      margin-bottom: 24px;
+      font-weight: 600;
+    }
+
+    .row {
+      margin-bottom: 14px;
+    }
+
+    label {
+      display: inline-block;
+      width: 80px;
+      color: var(--muted);
+    }
+
+    select,
+    input[type=number] {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 12px;
+      font-size: 14px;
+      transition: all .15s ease;
+    }
+
+    select {
+      width: 340px;
+    }
+
+    input[type=number] {
+      width: 90px;
+    }
+
+    select:focus,
+    input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+
+    button {
+      background: var(--surface);
+      color: var(--text);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 8px 16px;
+      cursor: pointer;
+      transition: all .15s ease;
+      font-size: 14px;
+    }
+
+    button:hover {
+      background: var(--surface-hover);
+      transform: translateY(-1px);
+    }
+
+    button#sendBtn {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+
+    button#sendBtn:hover {
+      background: var(--accent-hover);
+    }
+
+    button#stopBtn {
+      background: var(--danger);
+      border-color: var(--danger);
+      color: white;
+    }
+
+    button#stopBtn:hover {
+      background: var(--danger-hover);
+    }
+
+    #log {
+      margin-top: 24px;
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px;
+      height: 420px;
+      overflow-y: auto;
+      background: #0b0d12;
+
+      font-family: "JetBrains Mono", monospace;
+      font-size: 12px;
+      line-height: 1.7;
+    }
+
+    #status {
+      margin-top: 12px;
+      font-size: 13px;
+      color: var(--muted);
+      min-height: 18px;
+    }
+
+    .ok    { color: #22c55e; }
+    .slow  { color: #f59e0b; }
+    .redir { color: #60a5fa; }
+    .err4  { color: #fb7185; }
+    .err5  { color: #ef4444; }
+    .meta  { color: #64748b; }
+  </style>
+</head>
+<body>
+  <h2>Traffic Generator</h2>
+
+  <div class="row">
+    <label>Endpoint</label>
+    <select id="urlSelect"></select>
+  </div>
+  <div class="row">
+    <label>Repeat</label>
+    <input type="number" id="count" value="1" min="1" max="500">
+    &nbsp;times &nbsp;every&nbsp;
+    <input type="number" id="delay" value="200" min="0" max="60000">
+    &nbsp;ms
+  </div>
+  <div class="row">
+    <label></label>
+    <button id="sendBtn" onclick="startSend()">Send</button>
+    <button id="stopBtn" onclick="stopSend()">Stop</button>
+    <button onclick="clearLog()">Clear</button>
+  </div>
+  <div id="status"></div>
+
+  <div id="log"></div>
+
+  <script>
+    const ENDPOINTS = [
+      // Health
+      { label: 'GET    /health',              method: 'GET',    url: '/health' },
+
+      // Users CRUD
+      { label: 'GET    /users',               method: 'GET',    url: '/users' },
+      { label: 'POST   /users',               method: 'POST',   url: '/users',   body: () => ({ name: 'Demo User', email: `demo_${Date.now()}@test.com`, role: 'user' }) },
+      { label: 'GET    /users/:id',           method: 'GET',    url: '/users/1' },
+      { label: 'PUT    /users/:id',           method: 'PUT',    url: '/users/1', body: () => ({ name: 'Alice Updated', role: 'admin' }) },
+      { label: 'DELETE /users/:id',           method: 'DELETE', url: '/users/1' },
+
+      // Slow
+      { label: 'GET    /slow (2s)',           method: 'GET',    url: '/slow' },
+
+      // Non-2xx
+      { label: 'GET    /redirect (302)',      method: 'GET',    url: '/redirect' },
+      { label: 'GET    /bad-request (400)',   method: 'GET',    url: '/bad-request' },
+      { label: 'GET    /forbidden (403)',     method: 'GET',    url: '/forbidden' },
+      { label: 'GET    /not-found (404)',     method: 'GET',    url: '/not-found' },
+      { label: 'GET    /always-error (500)',  method: 'GET',    url: '/always-error' },
+    ]
+
+    const urlSelect = document.getElementById('urlSelect')
+    ENDPOINTS.forEach((ep, i) => {
+      const opt = document.createElement('option')
+      opt.value = i
+      opt.text  = ep.label
+      urlSelect.appendChild(opt)
+    })
+
+    const logEl    = document.getElementById('log')
+    const statusEl = document.getElementById('status')
+    let running    = false
+
+    function addLine(text, cls) {
+      const ts  = new Date().toISOString().slice(11, 23)
+      const div = document.createElement('div')
+      div.className = cls
+      div.textContent = `[${ts}]  ${text}`
+      logEl.appendChild(div)
+      logEl.scrollTop = logEl.scrollHeight
+    }
+
+    function clearLog() { logEl.innerHTML = '' }
+    function stopSend() { running = false }
+
+    function getBodyOpts(ep) {
+      if (ep.body && (ep.method === 'POST' || ep.method === 'PUT'))
+        return { headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(ep.body()) }
+      return {}
+    }
+
+    async function doOne(ep) {
+      const opts = { method: ep.method, ...getBodyOpts(ep) }
+      const t0   = Date.now()
+      try {
+        const res  = await fetch(ep.url, opts)
+        const ms   = Date.now() - t0
+        const code = res.status
+
+        let cls = 'ok'
+        if (ms > 1500)        cls = 'slow'
+        if (code >= 500)      cls = 'err5'
+        else if (code >= 400) cls = 'err4'
+        else if (code >= 300) cls = 'redir'
+
+        addLine(`${ep.method.padEnd(6)} ${ep.url.padEnd(40)} →  ${code}  (${ms}ms)`, cls)
+      } catch (e) {
+        addLine(`${ep.method.padEnd(6)} ${ep.url.padEnd(40)} →  NETWORK ERROR: ${e.message}`, 'err5')
+      }
+    }
+
+    async function startSend() {
+      if (running) return
+      const ep    = ENDPOINTS[+urlSelect.value]
+      const count = Math.max(1, Math.min(500, +document.getElementById('count').value || 1))
+      const delay = Math.max(0, +document.getElementById('delay').value || 0)
+      running = true
+
+      for (let i = 0; i < count && running; i++) {
+        statusEl.textContent = `Sending ${i + 1} / ${count}…`
+        await doOne(ep)
+        if (delay > 0 && i < count - 1) await new Promise(r => setTimeout(r, delay))
+      }
+
+      statusEl.textContent = running ? `Done. Sent ${count} request(s).` : 'Stopped.'
+      running = false
+    }
+  </script>
+</body>
+</html>

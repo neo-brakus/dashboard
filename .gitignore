@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+
+# Environment — never commit secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+npm-debug.log*
+
+# Docker volumes (if bind-mounted locally)
+monitoring/grafana/data/
+monitoring/loki/data/
+monitoring/tempo/data/
+monitoring/prometheus/data/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor
+.vscode/
+.idea/
+
+# Test / coverage
+coverage/
+
+# Build output
+dist/
+build/
