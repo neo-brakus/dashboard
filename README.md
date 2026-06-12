@@ -44,7 +44,7 @@ flowchart TD
     Tempo["Tempo\n(traces)"]
     Grafana["Grafana\n(dashboards)"]
 
-    App -->|"OTLP HTTP traces\n:4318"| Alloy
+    App -->|"OTLP HTTP traces:4318"| Alloy
     Nginx -->|"Docker log discovery"| Alloy
     App -->|"stdout JSON logs"| Alloy
     NodeExp -->|"scrape :9100"| Alloy
