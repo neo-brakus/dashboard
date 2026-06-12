@@ -1,0 +1,10 @@
+# monitoring/grafana/provisioning/dashboards/dashboards.yml
+apiVersion: 1
+
+providers:
+  - name: default
+    type: file
+    disableDeletion: false   # Allow edits in the UI to persist back to the file
+    updateIntervalSeconds: 30
+    options:
+      path: /etc/grafana/provisioning/dashboards
